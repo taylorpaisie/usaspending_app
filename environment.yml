@@ -1,0 +1,15 @@
+name: usaspending-dash
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pandas
+  - requests
+  - plotly
+  - dash
+  - dash-bootstrap-components
+  - cachetools
+  - pip:
+      # Optional: only include pip-only deps here (none required for this app)
+      - gunicorn
