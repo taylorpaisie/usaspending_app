@@ -631,18 +631,20 @@ def make_app() -> Dash:
             html.Hr(className="my-5"),
             html.Footer(
                 html.Small(
-                    "Data from ",
-                    html.A(
-                        "USAspending.gov",
-                        href="https://www.usaspending.gov/",
-                        target="_blank",
-                    ),
-                    " | Built with ",
-                    html.A(
-                        "Dash",
-                        href="https://dash.plotly.com/",
-                        target="_blank",
-                    ),
+                    [
+                        "Data from ",
+                        html.A(
+                            "USAspending.gov",
+                            href="https://www.usaspending.gov/",
+                            target="_blank",
+                        ),
+                        " | Built with ",
+                        html.A(
+                            "Dash",
+                            href="https://dash.plotly.com/",
+                            target="_blank",
+                        ),
+                    ],
                     className="text-muted",
                 ),
                 className="text-center pb-3",
