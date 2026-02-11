@@ -7,10 +7,28 @@ Loads configuration from environment variables with sensible defaults.
 import os
 from functools import lru_cache
 
-from dotenv import load_dotenv
+
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Load environment variables from a local .env file when present."""
+    env_path = os.path.join(os.getcwd(), path)
+    if not os.path.exists(env_path):
+        return
+
+    with open(env_path, "r", encoding="utf-8") as env_file:
+        for raw_line in env_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
+
 
 # Load environment variables from .env file if it exists
-load_dotenv()
+_load_dotenv()
 
 
 @lru_cache(maxsize=1)
@@ -40,6 +58,7 @@ def get_config() -> dict:
         "default_top_n": int(os.getenv("DEFAULT_TOP_N", "20")),
         "max_awards_table_rows": int(os.getenv("MAX_AWARDS_TABLE_ROWS", "50")),
         "date_range_days": int(os.getenv("DATE_RANGE_DAYS", "365")),
+        "auto_refresh_seconds": int(os.getenv("AUTO_REFRESH_SECONDS", "60")),
         
         # Feature Flags
         "enable_logging": os.getenv("ENABLE_LOGGING", "True").lower() == "true",

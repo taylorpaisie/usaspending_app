@@ -28,7 +28,8 @@ import pandas as pd
 import plotly.express as px
 import requests
 from cachetools import TTLCache
-from dash import Dash, Input, Output, State, callback, dash_table, dcc, html
+from dash import Dash, Input, Output, State, callback, callback_context, dash_table, dcc, html
+from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 
 from config import CONFIG
@@ -91,13 +92,14 @@ class Filters:
             raise ValueError("place_state must be a 2-letter state code")
 
 
-def _http_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _http_post(path: str, payload: Dict[str, Any], use_cache: bool = True) -> Dict[str, Any]:
     """
     Make an HTTP POST request to the USAspending API with caching.
     
     Args:
         path: API endpoint path (e.g., "/spending_by_category/recipient/")
         payload: Request payload dictionary
+        use_cache: Whether to use cached API responses
         
     Returns:
         API response parsed as dictionary
@@ -106,10 +108,10 @@ def _http_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         requests.HTTPError: If API request fails
     """
     url = f"{USASPENDING_BASE}{path}"
-    cache_key = (url, tuple(sorted(_freeze(payload).items())))
+    cache_key = (url, _freeze(payload))
     
     # Check cache first
-    if cache_key in CACHE:
+    if use_cache and cache_key in CACHE:
         logger.debug(f"Cache hit for {path}")
         return CACHE[cache_key]
     
@@ -118,8 +120,9 @@ def _http_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         resp = requests.post(url, json=payload, timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
-        CACHE[cache_key] = data
-        logger.debug(f"Successfully cached response for {path}")
+        if use_cache:
+            CACHE[cache_key] = data
+            logger.debug(f"Successfully cached response for {path}")
         return data
     except requests.exceptions.Timeout:
         logger.error(f"Request timeout for {path} after {HTTP_TIMEOUT}s")
@@ -136,7 +139,7 @@ def _freeze(obj: Any) -> Any:
     Recursively converts dicts to frozensets of items and lists to tuples.
     """
     if isinstance(obj, dict):
-        return {k: _freeze(v) for k, v in obj.items()}
+        return tuple(sorted((k, _freeze(v)) for k, v in obj.items()))
     if isinstance(obj, list):
         return tuple(_freeze(x) for x in obj)
     return obj
@@ -201,7 +204,7 @@ def _award_type_options() -> List[Dict[str, str]]:
     ]
 
 
-def _spending_by_recipient(filters: Filters) -> pd.DataFrame:
+def _spending_by_recipient(filters: Filters, use_cache: bool = True) -> pd.DataFrame:
     """
     Fetch spending aggregated by recipient.
     
@@ -224,7 +227,7 @@ def _spending_by_recipient(filters: Filters) -> pd.DataFrame:
     }
 
     try:
-        data = _http_post("/spending_by_category/recipient/", payload)
+        data = _http_post("/spending_by_category/recipient/", payload, use_cache=use_cache)
     except requests.HTTPError as e:
         logger.error(f"Failed to fetch recipient spending: {e}")
         return pd.DataFrame()
@@ -251,7 +254,7 @@ def _spending_by_recipient(filters: Filters) -> pd.DataFrame:
     return df
 
 
-def _spending_over_time(filters: Filters) -> pd.DataFrame:
+def _spending_over_time(filters: Filters, use_cache: bool = True) -> pd.DataFrame:
     """
     Fetch spending aggregated by time period (monthly).
     
@@ -271,7 +274,7 @@ def _spending_over_time(filters: Filters) -> pd.DataFrame:
     }
 
     try:
-        data = _http_post("/spending_over_time/", payload)
+        data = _http_post("/spending_over_time/", payload, use_cache=use_cache)
     except requests.HTTPError as e:
         logger.error(f"Failed to fetch spending over time: {e}")
         return pd.DataFrame()
@@ -296,7 +299,11 @@ def _spending_over_time(filters: Filters) -> pd.DataFrame:
     return result
 
 
-def _awards_table(filters: Filters, limit: int | None = None) -> pd.DataFrame:
+def _awards_table(
+    filters: Filters,
+    limit: int | None = None,
+    use_cache: bool = True,
+) -> pd.DataFrame:
     """
     Fetch individual awards matching the filter criteria.
     
@@ -333,7 +340,7 @@ def _awards_table(filters: Filters, limit: int | None = None) -> pd.DataFrame:
     }
 
     try:
-        data = _http_post("/awards/", payload)
+        data = _http_post("/awards/", payload, use_cache=use_cache)
     except requests.HTTPError as e:
         logger.error(f"Failed to fetch awards: {e}")
         return pd.DataFrame()
@@ -504,6 +511,36 @@ def make_app() -> Dash:
                                         size="lg",
                                         n_clicks=0,
                                     ),
+                                    dbc.Switch(
+                                        id="live_mode",
+                                        label="Live mode (auto-refresh from USAspending API)",
+                                        value=False,
+                                        className="mt-3",
+                                    ),
+                                    dbc.Label("Auto-refresh interval (seconds)", className="fw-bold mt-3"),
+                                    dbc.Input(
+                                        id="refresh_seconds",
+                                        type="number",
+                                        min=15,
+                                        step=15,
+                                        value=CONFIG["auto_refresh_seconds"],
+                                        className="mb-2",
+                                    ),
+                                    html.Small(
+                                        "Live mode bypasses cached responses to request fresh API data.",
+                                        className="text-muted d-block",
+                                    ),
+                                    html.Div(
+                                        id="last_updated",
+                                        className="text-muted mt-2",
+                                        children="Live mode disabled · click Search to refresh",
+                                    ),
+                                    dcc.Interval(
+                                        id="live_interval",
+                                        interval=CONFIG["auto_refresh_seconds"] * 1000,
+                                        n_intervals=0,
+                                        disabled=True,
+                                    ),
                                     html.Div(
                                         id="err",
                                         className="text-danger mt-3",
@@ -655,6 +692,33 @@ def make_app() -> Dash:
     )
 
     @callback(
+        Output("live_interval", "disabled"),
+        Output("live_interval", "interval"),
+        Output("last_updated", "children", allow_duplicate=True),
+        Input("live_mode", "value"),
+        Input("refresh_seconds", "value"),
+        prevent_initial_call=True,
+    )
+    def configure_live_mode(live_mode: bool, refresh_seconds: Any) -> Tuple[bool, int, str]:
+        """Configure polling behavior for live mode updates."""
+        try:
+            refresh_seconds_int = int(refresh_seconds or CONFIG["auto_refresh_seconds"])
+        except (TypeError, ValueError):
+            refresh_seconds_int = CONFIG["auto_refresh_seconds"]
+
+        refresh_seconds_int = max(15, refresh_seconds_int)
+        interval_ms = refresh_seconds_int * 1000
+
+        if live_mode:
+            return (
+                False,
+                interval_ms,
+                f"Live mode enabled · auto-refresh every {refresh_seconds_int}s",
+            )
+
+        return True, interval_ms, "Live mode disabled · click Search to refresh"
+
+    @callback(
         Output("recipients_bar", "figure"),
         Output("time_line", "figure"),
         Output("awards_table", "data"),
@@ -662,7 +726,9 @@ def make_app() -> Dash:
         Output("kpi_total", "children"),
         Output("kpi_count", "children"),
         Output("err", "children"),
+        Output("last_updated", "children", allow_duplicate=True),
         Input("run", "n_clicks"),
+        Input("live_interval", "n_intervals"),
         State("keyword", "value"),
         State("agency_ids", "value"),
         State("award_types", "value"),
@@ -670,10 +736,12 @@ def make_app() -> Dash:
         State("dates", "end_date"),
         State("state", "value"),
         State("top_n", "value"),
-        prevent_initial_call=False,
+        State("live_mode", "value"),
+        prevent_initial_call="initial_duplicate",
     )
     def refresh(
         _n: int,
+        _live_tick: int,
         keyword: Optional[str],
         agency_ids: Optional[str],
         award_types: Optional[List[str]],
@@ -681,14 +749,21 @@ def make_app() -> Dash:
         end_date_in: Optional[str],
         state: Optional[str],
         top_n: Any,
-    ) -> Tuple[Any, Any, List[Dict], List[Dict], str, str, str]:
+        live_mode: bool,
+    ) -> Tuple[Any, Any, List[Dict], List[Dict], str, str, str, str]:
         """
         Callback to refresh all visualizations based on filter inputs.
         
         Fetches data from the USAspending API and updates all outputs.
         """
         logger.info(f"Refresh triggered: keyword={keyword}, n_clicks={_n}")
-        
+
+        trigger_id = callback_context.triggered_id
+        if trigger_id == "live_interval" and not live_mode:
+            raise PreventUpdate
+
+        use_cache = trigger_id != "live_interval"
+
         try:
             # Parse and validate input: agencies
             agencies = tuple(
@@ -727,13 +802,14 @@ def make_app() -> Dash:
                     "—",
                     "—",
                     error_msg,
+                    "Last update failed",
                 )
 
             # Fetch data
             logger.info("Fetching data from API")
-            recipients_df = _spending_by_recipient(f)
-            time_df = _spending_over_time(f)
-            awards_df = _awards_table(f)
+            recipients_df = _spending_by_recipient(f, use_cache=use_cache)
+            time_df = _spending_over_time(f, use_cache=use_cache)
+            awards_df = _awards_table(f, use_cache=use_cache)
 
             # Build recipients bar chart
             if recipients_df.empty:
@@ -812,6 +888,7 @@ def make_app() -> Dash:
                 _format_money(total),
                 str(count),
                 "",  # Clear error message
+                f"Last updated: {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             )
 
         except requests.exceptions.Timeout:
@@ -825,6 +902,7 @@ def make_app() -> Dash:
                 "—",
                 "—",
                 error_msg,
+                "Last update failed",
             )
         except requests.HTTPError as e:
             error_msg = f"API Error {e.response.status_code}: {str(e)}\nCheck your filters and try again."
@@ -837,6 +915,7 @@ def make_app() -> Dash:
                 "—",
                 "—",
                 error_msg,
+                "Last update failed",
             )
         except Exception as e:
             error_msg = f"Unexpected error: {str(e)}\n\nPlease check your filters and try again."
@@ -849,6 +928,7 @@ def make_app() -> Dash:
                 "—",
                 "—",
                 error_msg,
+                "Last update failed",
             )
 
     logger.info("App initialization complete")
