@@ -425,15 +425,33 @@ def make_app() -> Dash:
     app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
     app.title = "USAspending Explorer"
 
-    app.layout = dbc.Container(
-        [
-            html.Div([
-                html.H1("🏛️ USAspending Explorer", className="my-4"),
-                html.P(
-                    "Search and visualize U.S. federal spending data from usaspending.gov",
-                    className="text-muted mb-3"
-                ),
-            ]),
+    app.layout = html.Div(
+        dbc.Container(
+            [
+            dbc.Row(
+                [
+                    dbc.Col(
+                        html.Div([
+                            html.H1("🏛️ USAspending Explorer", className="my-4"),
+                            html.P(
+                                "Search and visualize U.S. federal spending data from usaspending.gov",
+                                className="text-muted mb-3"
+                            ),
+                        ]),
+                        md=9,
+                    ),
+                    dbc.Col(
+                        dbc.Switch(
+                            id="dark_mode",
+                            label="Dark theme",
+                            value=False,
+                            className="d-flex justify-content-md-end mt-4",
+                        ),
+                        md=3,
+                    ),
+                ],
+                className="align-items-start",
+            ),
             dbc.Alert(
                 "💡 Tip: Start broad (no keyword), then refine with award types, agencies, and state.",
                 color="info",
@@ -686,10 +704,22 @@ def make_app() -> Dash:
                 ),
                 className="text-center pb-3",
             ),
-        ],
-        fluid=True,
-        className="bg-light min-vh-100",
+            ],
+            fluid=True,
+            className="min-vh-100 py-2",
+        ),
+        id="page-root",
+        className="min-vh-100 bg-body text-body",
+        **{"data-bs-theme": "light"},
     )
+
+    @callback(
+        Output("page-root", "data-bs-theme"),
+        Input("dark_mode", "value"),
+    )
+    def toggle_theme(dark_mode: bool) -> str:
+        """Toggle app color mode between light and dark themes."""
+        return "dark" if dark_mode else "light"
 
     @callback(
         Output("live_interval", "disabled"),
